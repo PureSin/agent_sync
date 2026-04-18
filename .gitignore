@@ -1,0 +1,10 @@
+# Claude export data — contains personal info, never commit
+onboarding/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+dist/
+*.egg-info/

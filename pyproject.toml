@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-sync"
+version = "0.1.0"
+description = "Agentic reconciliation tool for building CLAUDE.md and SOUL.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.52.0",
+]
+
+[project.scripts]
+agent-sync = "agent_sync:main"
