@@ -2,6 +2,7 @@
 onboarding/
 
 # Python
+.env
 __pycache__/
 *.pyc
 *.pyo

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import webbrowser
 import zipfile
@@ -15,6 +16,15 @@ from textual.app import App, ComposeResult
 from textual.containers import Center, Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Rule, Static
+
+# Load .env if present (lightweight — no dependency on python-dotenv)
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 CLAUDE_EXPORT_URL = "https://claude.ai/settings/data-privacy-controls"
 REQUIRED_FILES = {"users.json", "memories.json", "projects.json", "conversations.json"}
@@ -252,9 +262,15 @@ class IngestScreen(Screen):
     def __init__(self, export_path: Path) -> None:
         super().__init__()
         self._path = export_path
+        self._data_dir: Path | None = None
 
     def compose(self) -> ComposeResult:
         summary, data_dir = _build_summary(self._path)
+        self._data_dir = data_dir
+
+        # Check if mem9 is configured
+        mem9_configured = bool(os.environ.get("MEM9_API_KEY"))
+
         yield Header(show_clock=False)
         yield Center(
             Vertical(
@@ -262,6 +278,39 @@ class IngestScreen(Screen):
                 Static(f"Source: {data_dir}", classes="muted small"),
                 Rule(),
                 Static(summary, id="summary-box"),
+                # ── mem9 cloud sync section ────────────────────────────
+                Rule(),
+                Static("☁  mem9 Cloud Sync", classes="heading"),
+                *(
+                    [
+                        Static(
+                            "✓  MEM9_API_KEY configured",
+                            classes="success",
+                        ),
+                        Horizontal(
+                            Button(
+                                "Sync to mem9  ☁",
+                                variant="primary",
+                                id="btn-mem9-sync",
+                            ),
+                            Button(
+                                "Search mem9  🔍",
+                                id="btn-mem9-search",
+                            ),
+                            classes="btn-row",
+                        ),
+                        Static("", id="mem9-status", classes="muted"),
+                    ]
+                    if mem9_configured
+                    else [
+                        Static(
+                            "✗  MEM9_API_KEY not set.  "
+                            "Add it to [bold].env[/bold] or export it.",
+                            classes="muted",
+                        ),
+                    ]
+                ),
+                # ── navigation ─────────────────────────────────────────
                 Rule(),
                 Static(
                     "Next: [bold]Step 1[/bold] — Review proposed CLAUDE.md facts.",
@@ -276,6 +325,65 @@ class IngestScreen(Screen):
             )
         )
         yield Footer()
+
+    @on(Button.Pressed, "#btn-mem9-sync")
+    def start_mem9_sync(self) -> None:
+        self.query_one("#btn-mem9-sync", Button).disabled = True
+        self.query_one("#mem9-status", Static).update("Syncing to mem9…")
+        self._run_mem9_sync()
+
+    @work(exclusive=True)
+    async def _run_mem9_sync(self) -> None:
+        from mem9_sync import sync_memories
+        from mem9_client import Mem9Client, Mem9Error
+
+        status = self.query_one("#mem9-status", Static)
+
+        try:
+            client = Mem9Client()
+
+            # Quick health check first
+            try:
+                client.health_check()
+            except Exception:
+                status.update("[red]Error:[/red] Cannot reach mem9 API")
+                self.query_one("#btn-mem9-sync", Button).disabled = False
+                return
+
+            def _on_progress(current: int, total: int, msg: str) -> None:
+                self.call_from_thread(
+                    status.update,
+                    f"[{current}/{total}] {msg}",
+                )
+
+            result = await asyncio.to_thread(
+                sync_memories,
+                self._data_dir,
+                client=client,
+                on_progress=_on_progress,
+            )
+
+            status.update(
+                f"Done ✓  {result.uploaded} uploaded, "
+                f"{result.skipped} skipped, {result.failed} failed "
+                f"({result.success_rate})"
+            )
+            if result.errors:
+                self.notify(
+                    f"{result.failed} memories failed to sync",
+                    severity="warning",
+                )
+
+        except Mem9Error as e:
+            status.update(f"[red]mem9 error:[/red] {e.detail}")
+            self.query_one("#btn-mem9-sync", Button).disabled = False
+        except Exception as e:
+            status.update(f"[red]Error:[/red] {e}")
+            self.query_one("#btn-mem9-sync", Button).disabled = False
+
+    @on(Button.Pressed, "#btn-mem9-search")
+    def open_mem9_dashboard(self) -> None:
+        webbrowser.open("https://mem9.ai/your-memory/")
 
     @on(Button.Pressed, "#btn-continue")
     def continue_flow(self) -> None:

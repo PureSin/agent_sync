@@ -9,6 +9,7 @@ description = "Agentic reconciliation tool for building CLAUDE.md and SOUL.md"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=0.52.0",
+    "requests>=2.31.0",
 ]
 
 [project.scripts]
