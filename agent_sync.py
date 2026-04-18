@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 import webbrowser
 import zipfile
 from pathlib import Path
 
-from textual import on
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Center, Horizontal, Vertical
 from textual.screen import Screen
@@ -111,10 +113,15 @@ class UnsupportedScreen(Screen):
 class ExportScreen(Screen):
     """Guide the user through Claude data export."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._cc_path = _check_claude_code()
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield Center(
             Vertical(
+                # ── Claude export section ─────────────────────────────────
                 Static("Export your Claude data", classes="heading"),
                 Static(
                     "We need your Claude export zip to read:\n"
@@ -136,6 +143,45 @@ class ExportScreen(Screen):
                     placeholder="~/Downloads/data-xxxx-batch-0000/",
                     id="path-input",
                 ),
+                # ── Claude Code insights section ──────────────────────────
+                Rule(),
+                Static("Claude Code Insights", classes="heading"),
+                *(
+                    [
+                        Static(
+                            f"✓  claude detected at [dim]{self._cc_path}[/dim]",
+                            classes="success",
+                        ),
+                        Horizontal(
+                            Button(
+                                "Generate Insights →",
+                                variant="primary",
+                                id="btn-insights",
+                            ),
+                            Button(
+                                "Open Report  ↗",
+                                id="btn-open-report",
+                                classes="hidden",
+                            ),
+                            classes="btn-row",
+                        ),
+                        Static("", id="insights-status", classes="muted"),
+                    ]
+                    if self._cc_path
+                    else [
+                        Static(
+                            "✗  Claude Code CLI not found.",
+                            classes="muted",
+                        ),
+                        Static(
+                            "Install from [link=https://claude.ai/code]claude.ai/code[/link]"
+                            " to unlock Code insights.",
+                            classes="muted small",
+                        ),
+                    ]
+                ),
+                # ── bottom nav ────────────────────────────────────────────
+                Rule(),
                 Horizontal(
                     Button("Ingest →", variant="success", id="btn-ingest"),
                     Button("← Back", id="btn-back"),
@@ -152,6 +198,35 @@ class ExportScreen(Screen):
         btn = self.query_one("#btn-browser", Button)
         btn.label = "Opened ✓"
         btn.variant = "default"
+
+    @on(Button.Pressed, "#btn-insights")
+    def start_insights(self) -> None:
+        self.query_one("#btn-insights", Button).disabled = True
+        self.query_one("#insights-status", Static).update("Running…")
+        self._run_insights()
+
+    @work(exclusive=True)
+    async def _run_insights(self) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", "/insights",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await proc.communicate()
+        if proc.returncode != 0:
+            msg = err.decode().strip() or "insights command failed"
+            self.query_one("#insights-status", Static).update(f"[red]Error:[/red] {msg}")
+            self.query_one("#btn-insights", Button).disabled = False
+        else:
+            report = _get_report_path()
+            self.query_one("#insights-status", Static).update(
+                f"Done ✓  [dim]{report}[/dim]"
+            )
+            self.query_one("#btn-open-report", Button).remove_class("hidden")
+
+    @on(Button.Pressed, "#btn-open-report")
+    def open_report(self) -> None:
+        webbrowser.open(_get_report_path().as_uri())
 
     @on(Button.Pressed, "#btn-ingest")
     def ingest(self) -> None:
@@ -212,6 +287,15 @@ class IngestScreen(Screen):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _check_claude_code() -> str | None:
+    """Return the claude binary path if installed, else None."""
+    return shutil.which("claude")
+
+
+def _get_report_path() -> Path:
+    return Path.home() / ".claude" / "usage-data" / "report.html"
+
 
 def _resolve_data_dir(path: Path) -> Path:
     """Given an export root or data-xxxx subdir, return the dir with JSONs."""
@@ -295,10 +379,14 @@ Screen { align: center middle; }
 
 #card {
     width: 80;
+    max-height: 90vh;
     padding: 2 3;
     border: round $primary;
     background: $surface;
+    overflow-y: auto;
 }
+
+.hidden { display: none; }
 
 #banner {
     color: $accent;

@@ -7,3 +7,6 @@ This refined focus streamlines Agent Sync into a high-impact "Identity & Persona
 - Tone: Authentic, adaptive, touch of wit.
 - Communication: Scannable lists over dense text.
 - Values: Correct misinformation directly; skip the fluff.
+
+Example values:
+/path/to/export-data
