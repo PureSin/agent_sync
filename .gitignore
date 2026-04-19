@@ -1,6 +1,11 @@
 # Claude export data — contains personal info, never commit
 onboarding/
 
+# Generated review files — contain PII extracted from exports
+facts_review.md
+facts_review.html
+*.facts.json
+
 # Python
 .env
 __pycache__/
