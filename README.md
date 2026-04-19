@@ -5,7 +5,7 @@ An agentic reconciliation tool that harvests AI interaction data to build, verif
 ## Quick Start
 
 ```bash
-pip install textual requests
+pip install textual requests openai python-dotenv
 python3 agent_sync.py
 ```
 
@@ -28,13 +28,14 @@ The tool acts as a "data harvester" for your Claude export files.
 - **Analysis**: An LLM-backed parser scans for Identity Markers (facts for CLAUDE.md) and Behavioral Markers (patterns for SOUL.md)
 - **Conflict Detection**: Identifying when a new conversation contradicts a stored memory
 
-### Step 1: Initial Onboarding & Review
+### Step 1: Extract & Review
 
 The "Founding" phase where the user establishes the baseline.
 
-- **Fact Review**: Agent Sync presents a categorized list of "Proposed Truths"
-- **Persona Calibration**: Generates a draft SOUL.md based on past interaction patterns
-- **Action**: You "bless" or "tweak" the tone to match your preferences
+- **Fact Extraction**: `extract_facts.py` processes ingested sources via a pluggable backend (z.ai or Claude Code CLI) and produces a categorized list of discrete facts for `CLAUDE.md` and `SOUL.md`
+- **Fact Review**: Edit `facts_review.md` — delete, reword, or keep each fact before generating output files
+- **mem9 Upload**: Push approved facts to cloud memory with `--upload` (after extraction) or `--from-review` (from a pre-edited review file)
+- **Persona Calibration**: Generates a draft SOUL.md based on past interaction patterns *(write step — coming soon)*
 
 ### Step 2: Regular Review (The Pulse)
 
@@ -43,6 +44,45 @@ A recurring maintenance loop to keep the files current.
 - **Delta Detection**: Highlights only what has changed since last export
 - **Context Decay**: Flags stale facts for archival
 - **Learning Extraction**: Updates SOUL.md based on correction patterns
+
+## Fact Extraction (Step 1)
+
+`extract_facts.py` processes the Claude export and Code insights report through GLM-4.7 on z.ai to produce reviewable, structured facts.
+
+### Setup
+
+Add z.ai credentials to `.env`:
+
+```env
+Z_AI_API_KEY=your-key-here
+Z_AI_BASE_URL=https://api.z.ai/api/coding/paas/v4/
+Z_AI_MODEL=GLM-4.7
+```
+
+> **Note:** Use the `/coding/paas/v4/` endpoint if you have the GLM Coding Plan subscription.
+
+### Usage
+
+```bash
+# Extract facts and write review file
+python3 extract_facts.py \
+  --export-dir /path/to/data-xxxx-batch-0000 \
+  --report ~/.claude/usage-data/report.html \
+  --out onboarding/facts_review.md \
+  --json-out onboarding/facts.json
+
+# Extract and immediately upload to mem9
+python3 extract_facts.py \
+  --export-dir /path/to/data-xxxx-batch-0000 \
+  --report ~/.claude/usage-data/report.html \
+  --out onboarding/facts_review.md \
+  --json-out onboarding/facts.json \
+  --upload
+```
+
+Each fact is tagged in mem9 with `claude-md` or `soul-md`, its category, source file, and confidence level.
+
+---
 
 ## mem9 Cloud Memory
 
@@ -130,11 +170,10 @@ Your `MEM9_API_KEY` is the only way to reconnect to your memory space. Store it 
 
 ## Architecture
 
-Everything lives in three Python files:
-
 | File | Purpose |
 |------|---------|
 | `agent_sync.py` | Textual TUI — wizard-style screen flow for ingestion |
+| `extract_facts.py` | LLM-backed fact extractor (z.ai / GLM-4.7) → `facts_review.md` + mem9 |
 | `mem9_client.py` | REST client for the mem9 v1alpha2 API |
 | `mem9_sync.py` | Transforms Claude exports into mem9 memories |
 
@@ -147,6 +186,8 @@ WelcomeScreen → PlatformScreen → ExportScreen → IngestScreen (+ mem9 sync)
 
 ## What's Not Yet Built
 
-- Steps 1+ (fact review, CLAUDE.md/SOUL.md generation)
+- Step 1 Review: interactive TUI/web UI for per-fact accept/edit/skip/flag with session persistence
+- Step 1 Write: generate `CLAUDE.md` and `SOUL.md` from reviewed facts (global vs. project-level, diff before overwrite)
+- Step 2: delta detection, context decay flagging, and learning extraction for regular sync
 - Full memory browser/review screen in the TUI
 - Automatic conflict detection between local and cloud memories

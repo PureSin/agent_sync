@@ -4,7 +4,9 @@ extract_facts.py — Step 1: Extract reviewable facts from Claude export + Code 
 
 Usage:
     python3 extract_facts.py --export-dir <path> --report <path-to-report.html>
-    python3 extract_facts.py --export-dir <path>          # report is optional
+    python3 extract_facts.py --export-dir <path>                        # report is optional
+    python3 extract_facts.py --export-dir <path> --backend claude-code  # use Claude Code CLI
+    python3 extract_facts.py --export-dir <path> --backend zai          # use z.ai (default)
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import os
+import shutil
+import subprocess
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -131,9 +135,7 @@ You are a precise fact-extractor building two configuration files for a develope
   Best for: communication style, values, decision-making patterns, what they find
   annoying, how they like to be challenged, energy and tone, recurring mindset.
 
-Extract facts strictly from the provided sources. Do NOT invent anything.
 Output ONLY valid JSON matching this schema — no markdown fences, no prose:
-
 {
   "claude_md": [
     {
@@ -194,9 +196,18 @@ def _build_user_prompt(data: dict, report_text: str | None) -> str:
     return "\n\n".join(parts)
 
 
-# ── Claude API call ───────────────────────────────────────────────────────────
+# ── JSON parse helper ─────────────────────────────────────────────────────────
 
-def extract_facts(export_data: dict, report_text: str | None) -> dict:
+def _parse_json_response(raw: str) -> dict:
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    return json.loads(raw)
+
+
+# ── Backend: z.ai (OpenAI-compatible) ────────────────────────────────────────
+
+def _extract_via_zai(export_data: dict, report_text: str | None) -> dict:
     api_key = os.environ.get("Z_AI_API_KEY")
     base_url = os.environ.get("Z_AI_BASE_URL", "https://api.z.ai/api/paas/v4/")
     model = os.environ.get("Z_AI_MODEL", "glm-5.1")
@@ -216,12 +227,42 @@ def extract_facts(export_data: dict, report_text: str | None) -> dict:
             {"role": "user", "content": user_content},
         ],
     )
+    return _parse_json_response(response.choices[0].message.content)
 
-    raw = response.choices[0].message.content.strip()
-    # Strip accidental markdown fences
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
-    return json.loads(raw)
+
+# ── Backend: Claude Code CLI ──────────────────────────────────────────────────
+
+def _extract_via_claude_code(export_data: dict, report_text: str | None) -> dict:
+    if not shutil.which("claude"):
+        raise RuntimeError("'claude' CLI not found — install Claude Code first.")
+
+    user_content = _build_user_prompt(export_data, report_text)
+    full_prompt = f"{_SYSTEM}\n\n{user_content}"
+
+    print("Calling Claude Code CLI to extract facts…", flush=True)
+    result = subprocess.run(
+        ["claude", "-p", full_prompt],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI failed:\n{result.stderr.strip()}")
+
+    return _parse_json_response(result.stdout)
+
+
+# ── Dispatcher ────────────────────────────────────────────────────────────────
+
+BACKENDS = {
+    "zai": _extract_via_zai,
+    "claude-code": _extract_via_claude_code,
+}
+
+def extract_facts(export_data: dict, report_text: str | None, backend: str = "zai") -> dict:
+    fn = BACKENDS.get(backend)
+    if fn is None:
+        raise ValueError(f"Unknown backend '{backend}'. Choose from: {', '.join(BACKENDS)}")
+    return fn(export_data, report_text)
 
 
 # ── Markdown renderer ─────────────────────────────────────────────────────────
@@ -309,16 +350,77 @@ def upload_to_mem9(facts: dict) -> None:
     print(f"mem9: {ok} uploaded, {fail} failed.")
 
 
+# ── Review markdown parser ────────────────────────────────────────────────────
+
+_BADGE_TO_CONFIDENCE = {"🟢": "high", "🟡": "medium", "🔴": "low"}
+
+def parse_review_markdown(md_path: Path) -> dict:
+    text = md_path.read_text()
+    facts: dict = {"claude_md": [], "soul_md": []}
+
+    doc_type: str | None = None   # "claude_md" or "soul_md"
+    category: str | None = None
+
+    for line in text.splitlines():
+        if line.startswith("## CLAUDE.md"):
+            doc_type = "claude_md"
+        elif line.startswith("## SOUL.md"):
+            doc_type = "soul_md"
+        elif line.startswith("### ") and doc_type:
+            category = line[4:].strip().lower()
+        elif line.startswith("- ") and doc_type and category:
+            # Format: - {badge} {fact}  _{source}_
+            m = re.match(r"^-\s+([🟢🟡🔴])\s+(.+?)\s+_(\w[\w-]*)_\s*$", line)
+            if m:
+                badge, fact_text, source = m.group(1), m.group(2), m.group(3)
+                facts[doc_type].append({
+                    "category": category,
+                    "fact": fact_text,
+                    "source": source,
+                    "confidence": _BADGE_TO_CONFIDENCE.get(badge, "medium"),
+                })
+
+    return facts
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract facts from Claude export for review.")
-    parser.add_argument("--export-dir", required=True, help="Path to extracted Claude export folder")
+    parser.add_argument("--export-dir", default=None, help="Path to extracted Claude export folder")
     parser.add_argument("--report", default=None, help="Path to Claude Code insights report.html")
     parser.add_argument("--out", default="facts_review.md", help="Output markdown file (default: facts_review.md)")
     parser.add_argument("--json-out", default=None, help="Also save raw JSON to this path")
     parser.add_argument("--upload", action="store_true", help="Upload facts to mem9 after extraction")
+    parser.add_argument(
+        "--backend",
+        default="zai",
+        choices=list(BACKENDS),
+        help="AI backend to use for extraction (default: zai)",
+    )
+    parser.add_argument(
+        "--from-review",
+        default=None,
+        metavar="PATH",
+        help="Skip extraction — parse an existing facts_review.md and upload to mem9",
+    )
     args = parser.parse_args()
+
+    if args.from_review:
+        review_path = Path(args.from_review).expanduser().resolve()
+        if not review_path.exists():
+            print(f"Error: review file not found: {review_path}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Parsing review file: {review_path}")
+        facts = parse_review_markdown(review_path)
+        n_claude = len(facts.get("claude_md", []))
+        n_soul = len(facts.get("soul_md", []))
+        print(f"Parsed {n_claude} CLAUDE.md facts + {n_soul} SOUL.md facts.")
+        upload_to_mem9(facts)
+        return
+
+    if not args.export_dir:
+        parser.error("--export-dir is required unless --from-review is used")
 
     export_dir = Path(args.export_dir).expanduser().resolve()
     if not export_dir.exists():
@@ -343,7 +445,7 @@ def main() -> None:
         f"memory: {'yes' if export_data['memory'] else 'no'}"
     )
 
-    facts = extract_facts(export_data, report_text)
+    facts = extract_facts(export_data, report_text, backend=args.backend)
     n_claude = len(facts.get("claude_md", []))
     n_soul = len(facts.get("soul_md", []))
     print(f"Extracted {n_claude} CLAUDE.md facts + {n_soul} SOUL.md facts.")

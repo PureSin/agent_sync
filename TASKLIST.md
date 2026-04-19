@@ -9,7 +9,7 @@ Ingest Claude export data and Claude Code insights.
 
 ---
 
-## 🔲 Step 1: Extract
+## ✅ Step 1: Extract
 Run an LLM-backed parser over all ingested sources to produce discrete, atomic facts.
 
 **Inputs:**
@@ -18,8 +18,14 @@ Run an LLM-backed parser over all ingested sources to produce discrete, atomic f
 
 **Output:** Structured list of facts, each with:
 - Fact text (editable)
-- Suggested category (`memories.json` / `CLAUDE.md` / `SOUL.md`)
+- Suggested category (`CLAUDE.md` / `SOUL.md`)
 - Source reference (which file / conversation it came from)
+- Confidence level
+
+**Implemented:** `extract_facts.py`
+- Uses z.ai (GLM-4.7) via OpenAI-compatible SDK
+- `--upload` flag pushes facts to mem9 with category/source/confidence tags
+- Outputs `facts_review.md` (human-editable) + `facts.json` (raw)
 
 ---
 
